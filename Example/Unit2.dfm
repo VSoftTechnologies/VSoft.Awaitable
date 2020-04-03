@@ -15,7 +15,7 @@ object Form2: TForm2
   PixelsPerInch = 96
   TextHeight = 13
   object Label1: TLabel
-    Left = 336
+    Left = 408
     Top = 192
     Width = 50
     Height = 13
@@ -38,5 +38,14 @@ object Form2: TForm2
     Caption = 'Cancel'
     TabOrder = 1
     OnClick = Button2Click
+  end
+  object Button3: TButton
+    Left = 576
+    Top = 120
+    Width = 81
+    Height = 25
+    Caption = 'Do Something'
+    TabOrder = 2
+    OnClick = Button3Click
   end
 end
