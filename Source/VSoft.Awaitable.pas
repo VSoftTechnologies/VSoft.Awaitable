@@ -68,15 +68,29 @@ type
 
   //not cancellable
   TAsyncFunc<TResult> = reference to function : TResult;
+  TAsyncProc = TProc;
   //cancellable
-  TAsyncFunc<TResult, ICancellationToken> = reference to function(const cancelToken : ICancellationToken) : TResult;
+  TAsyncCancellableProc = reference to procedure(const cancelToken : ICancellationToken);
+  TAsyncCancellableFunc<TResult> = reference to function(const cancelToken : ICancellationToken) : TResult;
 
   TResultProc<TResult> = reference to procedure(const value : TResult);
 
   TExceptionProc = reference to procedure(const e: Exception);
 
+  IAwaitable = interface
+    procedure Await(const proc: TProc);overload;
+    ///  Called when an unhandled exception occurs in the async function
+    ///  Note : must be called before Await.
+    function OnException(const proc : TExceptionProc) : IAwaitable;
+
+    ///  Called when the cancellation token is signalled.
+    ///  Note : must be called before Await.
+    function OnCancellation(const proc : TProc) : IAwaitable;
+
+  end;
+
   /// This is returned from TAsync.Configure
-  IAwaitable<TResult> = interface
+  IAwaitable<TResult> = interface(IAwaitable)
     ///  Called when an unhandled exception occurs in the async function
     ///  Note : must be called before Await.
     function OnException(const proc : TExceptionProc) : IAwaitable<TResult>;
@@ -87,12 +101,14 @@ type
 
     ///  Runs the proc in the calling thread and provides the function result
     ///  as a parameter to the proc.
-    function Await(const proc: TResultProc<TResult>) : IAwaitable<TResult>;overload;
+    procedure Await(const proc: TResultProc<TResult>);overload;
   end;
 
   TAsync = class
+    class function Configure(const proc : TAsyncProc) : IAwaitable;overload;
+    class function Configure(const proc : TAsyncCancellableProc; const cancellationToken : ICancellationToken) : IAwaitable;overload;
     class function Configure<TResult>(const func : TAsyncFunc<TResult>) : IAwaitable<TResult>;overload;
-    class function Configure<TResult>(const func : TAsyncFunc<TResult, ICancellationToken>; const cancellationToken : ICancellationToken) : IAwaitable<TResult>;overload;
+    class function Configure<TResult>(const func : TAsyncCancellableFunc<TResult>; const cancellationToken : ICancellationToken) : IAwaitable<TResult>;overload;
   end;
 
   TCancellationTokenSourceFactory = class
@@ -133,7 +149,18 @@ type
 
 
 
-class function TAsync.Configure<TResult>(const func : TAsyncFunc<TResult, ICancellationToken>; const cancellationToken : ICancellationToken) : IAwaitable<TResult>;
+class function TAsync.Configure(const proc: TAsyncProc): IAwaitable;
+begin
+  result := TAwaitable.Create(proc);
+end;
+
+class function TAsync.Configure(const proc: TAsyncCancellableProc; const cancellationToken: ICancellationToken): IAwaitable;
+begin
+  result := TAwaitable.Create(proc, cancellationToken);
+
+end;
+
+class function TAsync.Configure<TResult>(const func : TAsyncCancellableFunc<TResult>; const cancellationToken : ICancellationToken) : IAwaitable<TResult>;
 begin
   result := TAwaitable<TResult>.Create(func, cancellationToken);
 end;

@@ -11,12 +11,15 @@ type
     Button1: TButton;
     Label1: TLabel;
     Button2: TButton;
+    Button3: TButton;
     procedure Button1Click(Sender: TObject);
     procedure FormCreate(Sender: TObject);
     procedure Button2Click(Sender: TObject);
+    procedure Button3Click(Sender: TObject);
   private
     { Private declarations }
     FCancellationTokenSource : ICancellationTokenSource;
+
   public
     { Public declarations }
   end;
@@ -68,6 +71,30 @@ begin
 end;
 
 
+function RunAndDoSomething(const token : ICancellationToken; const value : string) : IAwaitable;
+begin
+     result := TAsync.Configure(
+                  procedure(const cancelToken : ICancellationToken)
+                  var
+                    i: Integer;
+                  begin
+                      for i := 0 to 2000 do
+                      begin
+                        Sleep(1);
+                        //in loops, check the token
+                        if cancelToken.IsCancelled then
+                          exit;
+                      end;
+
+                      //where api's can take a handle for cancellation, use the token.handle
+                      WaitForSingleObject(cancelToken.Handle,5000);
+
+                      //any unhandled exceptions here will result in the on exception pro being called (if configured)
+
+                      //raise Exception.Create('Error Message');
+                  end, token);
+end;
+
 
 
 procedure TForm2.Button1Click(Sender: TObject);
@@ -102,9 +129,35 @@ begin
   FCancellationTokenSource.Cancel;
 end;
 
+procedure TForm2.Button3Click(Sender: TObject);
+begin
+  FCancellationTokenSource.Reset;
+  Label1.Caption := 'Running';
+
+  RunAndDoSomething(FCancellationTokenSource.Token, 'vincent')
+      .OnException(
+        procedure(const e : Exception)
+        begin
+          Label1.Caption := e.Message;
+        end)
+      .OnCancellation(
+        procedure
+        begin
+          //clean up
+          Label1.Caption := 'Cancelled';
+        end)
+      .Await(
+        procedure
+        begin
+          //use result
+          Label1.Caption := 'Done.';
+        end);
+end;
+
 procedure TForm2.FormCreate(Sender: TObject);
 begin
   FCancellationTokenSource := TCancellationTokenSourceFactory.Create;
 end;
+
 
 end.

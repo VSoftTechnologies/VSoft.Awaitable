@@ -1,7 +1,7 @@
 {
   "metadata": {
     "id": "VSoft.Awaitable",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "Async/Await wrapper for OmniThreaLibrary",
     "authors": "Vincent Parrett",
     "projectUrl": "https://github.com/VSoftTechnologies/VSoft.Awaitable",
