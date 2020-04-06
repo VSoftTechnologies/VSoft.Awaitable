@@ -5,7 +5,7 @@
 	"platforms": "Win32;Win64",
 	"package_compiler_min": 22,
 	"compiler_min": 22,
-	"first_version": "0.0.3",
+	"first_version": "v0.0.3",
 	"dependencies":
 	[
 		{
