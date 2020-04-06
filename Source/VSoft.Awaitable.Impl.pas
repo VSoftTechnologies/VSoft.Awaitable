@@ -31,7 +31,7 @@ unit VSoft.Awaitable.Impl;
 interface
 
 uses
-  System.SysUtils,
+  SysUtils,
   VSoft.Awaitable;
 
 type

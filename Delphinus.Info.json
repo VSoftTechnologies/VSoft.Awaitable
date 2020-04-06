@@ -1,0 +1,16 @@
+{
+	"id": "{6A2DF212-41DC-4E7F-9AA0-8B31409BB543}",
+	"license_type": "Apache-2.0",
+	"license_file": "LICENSE.txt",
+	"platforms": "Win32;Win64",
+	"package_compiler_min": 22,
+	"compiler_min": 22,
+	"first_version": "0.0.3",
+	"dependencies":
+	[
+		{
+			"id": "{a43e7593-777a-4858-9ab6-085d845c0c55}",
+			"version_min": "3.7.2"
+		}
+	]
+}
