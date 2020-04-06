@@ -38,7 +38,7 @@ unit VSoft.Awaitable;
 interface
 
 uses
-  System.SysUtils;
+  SysUtils;
 
 type
   ///  ICancellationToken is passed to async methods
