@@ -76,8 +76,8 @@
       "name": "default",
       "dependencies" : [
        {
-         id : "Gabr42.OmniThreadLibrary",
-         version : "[3.7.7,]"
+         "id" : "Gabr42.OmniThreadLibrary",
+         "version" : "[3.7.7,]"
        }
       ],
       "source": [
