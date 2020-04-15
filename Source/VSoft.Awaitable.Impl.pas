@@ -67,14 +67,10 @@ type
 
   TAwaitable<TResult> = class(TAwaitable, IAwaitable<TResult>)
   private
-
     //async
     FAsyncFunc : TAsyncFunc<TResult>;
     FCancellableAsyncFunc : TAsyncCancellableFunc<TResult>;
-
-
   protected
-
     procedure Await(const proc: TResultProc<TResult>);
     function OnException(const proc : TExceptionProc) : IAwaitable<TResult>;overload;
     function OnCancellation(const proc : TProc) : IAwaitable<TResult>;overload;

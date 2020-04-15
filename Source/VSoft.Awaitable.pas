@@ -38,33 +38,26 @@ unit VSoft.Awaitable;
 interface
 
 uses
-  SysUtils;
+  SysUtils,
+  VSoft.CancellationToken;
 
 type
+  //  aliases from VSoft.CancellationToken for backwards compatibility
+  //  note that we register our own cancellationtoken class here that
+  //  wraps the OmniThreadLibrary's cancellationtoken
+
   ///  ICancellationToken is passed to async methods
   ///  so that they can determin if the caller has
   ///  cancelled.
-  ICancellationToken = interface
-  ['{481A7D4C-60D2-4AE5-AE14-F2298E89B638}']
-    function  GetHandle: THandle;
-    function  IsCancelled: boolean;
+  ICancellationToken = VSoft.CancellationToken.ICancellationToken;
 
-    //Note : do not call SetEvent on this handle
-    //as it will result in IsSignalled prop
-    //returning incorrect results.
-    property Handle: THandle read GetHandle;
-  end;
-
+  //must be implemented by token classes
+  ICancellationTokenManage = VSoft.CancellationToken.ICancellationTokenManage;
 
   /// This should be created by calling functions and a reference
   /// stored where it will not go out of scope.
   /// Pass the Token to async methods.
-  ICancellationTokenSource = interface
-  ['{4B7627AE-E8CE-4857-90D7-3C6D5B8A4F9F}']
-    procedure Reset;
-    procedure Cancel;
-    function Token : ICancellationToken;
-  end;
+  ICancellationTokenSource = VSoft.CancellationToken.ICancellationTokenSource;
 
   //not cancellable
   TAsyncFunc<TResult> = reference to function : TResult;
@@ -111,6 +104,7 @@ type
     class function Configure<TResult>(const func : TAsyncCancellableFunc<TResult>; const cancellationToken : ICancellationToken) : IAwaitable<TResult>;overload;
   end;
 
+  /// Create a token source
   TCancellationTokenSourceFactory = class
     class function Create : ICancellationTokenSource;
   end;
@@ -123,30 +117,19 @@ uses
   VSoft.Awaitable.Impl;
 
 type
-  TCancellationToken = class(TInterfacedObject, ICancellationToken, IOmniCancellationToken)
+  TCancellationToken = class(TCancellationTokenBase, ICancellationToken, ICancellationTokenManage, IOmniCancellationToken)
   private
     FOmniToken : IOmniCancellationToken;
   protected
     function  GetHandle: THandle;
     function  IsCancelled: boolean;
     function GetOmniToken : IOmniCancellationToken;
+    procedure Cancel;
+    procedure Reset;
     property OmniToken : IOmniCancellationToken read GetOmniToken implements IOmniCancellationToken;
   public
-    constructor Create(const omniToken : IOmniCancellationToken);
+    constructor Create;override;
   end;
-
-  TCancellationTokenSource = class(TInterfacedObject, ICancellationTokenSource )
-  private
-    FOmniToken : IOmniCancellationToken;
-    FToken : ICancellationToken;
-  protected
-    procedure Reset;
-    procedure Cancel;
-    function Token : ICancellationToken;
-  public
-    constructor Create;
-  end;
-
 
 
 class function TAsync.Configure(const proc: TAsyncProc): IAwaitable;
@@ -177,14 +160,19 @@ end;
 
 class function TCancellationTokenSourceFactory.Create: ICancellationTokenSource;
 begin
-  result := TCancellationTokenSource.Create;
+  result := VSoft.CancellationToken.TCancellationTokenSourceFactory.Create;
 end;
 
 { TCancellationToken }
 
-constructor TCancellationToken.Create(const omniToken: IOmniCancellationToken);
+procedure TCancellationToken.Cancel;
 begin
-  FOmniToken := omniToken;
+  FOmniToken.Signal;
+end;
+
+constructor TCancellationToken.Create;
+begin
+  FOmniToken := CreateOmniCancellationToken;
 end;
 
 function TCancellationToken.GetHandle: THandle;
@@ -197,34 +185,18 @@ begin
   result := FOmniToken.IsSignalled;
 end;
 
+procedure TCancellationToken.Reset;
+begin
+  FOmniToken.Clear;
+end;
+
 function TCancellationToken.GetOmniToken: IOmniCancellationToken;
 begin
   result := FOmniToken;
 end;
 
 
-{ TCancellationTokenSource }
-
-procedure TCancellationTokenSource.Reset;
-begin
-  FOmniToken.Clear;
-end;
-
-constructor TCancellationTokenSource.Create;
-begin
-  FOmniToken := CreateOmniCancellationToken;
-  FToken := TCancellationToken.Create(FOmniToken);
-end;
-
-
-procedure TCancellationTokenSource.Cancel;
-begin
-  FOmniToken.Signal;
-end;
-
-function TCancellationTokenSource.Token: ICancellationToken;
-begin
-  result := FToken;
-end;
+initialization
+  VSoft.CancellationToken.TCancellationTokenSourceFactory.RegisterTokenClass(VSoft.Awaitable.TCancellationToken);
 
 end.
