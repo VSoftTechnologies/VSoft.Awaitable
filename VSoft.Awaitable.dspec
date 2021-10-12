@@ -1,7 +1,7 @@
 {
   "metadata": {
     "id": "VSoft.Awaitable",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "Async/Await wrapper for OmniThreaLibrary",
     "authors": "Vincent Parrett",
     "projectUrl": "https://github.com/VSoftTechnologies/VSoft.Awaitable",
@@ -71,7 +71,7 @@
       "template": "default"
     },
     {
-      "compiler": "11",
+      "compiler": "11.0",
       "platforms": "Win32, Win64",
       "template": "default"
     }
@@ -82,7 +82,7 @@
       "dependencies" : [
        {
          "id" : "VSoft.CancellationToken",
-         "version" : "[0.0.3,]"
+         "version" : "[0.0.4,]"
        },
        {
          "id" : "Gabr42.OmniThreadLibrary",
