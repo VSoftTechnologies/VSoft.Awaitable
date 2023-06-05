@@ -39,6 +39,7 @@ interface
 
 uses
   SysUtils,
+  OtlTaskControl,
   VSoft.CancellationToken;
 
 type
@@ -76,6 +77,9 @@ type
     ///  Note : must be called before Await.
     function OnException(const proc : TExceptionProc) : IAwaitable;
 
+
+    function GroupedBy(const aGroup : IOmniTaskGroup) : IAwaitable;
+
     ///  Called when the cancellation token is signalled.
     ///  Note : must be called before Await.
     function OnCancellation(const proc : TProc) : IAwaitable;
@@ -91,6 +95,8 @@ type
     ///  Called when the cancellation token is signalled.
     ///  Note : must be called before Await.
     function OnCancellation(const proc : TProc) : IAwaitable<TResult>;
+
+    function GroupedBy(const aGroup : IOmniTaskGroup) : IAwaitable<TResult>;
 
     ///  Runs the proc in the calling thread and provides the function result
     ///  as a parameter to the proc.
