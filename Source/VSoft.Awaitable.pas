@@ -39,7 +39,6 @@ interface
 
 uses
   SysUtils,
-  OtlTaskControl,
   VSoft.CancellationToken;
 
 type
@@ -71,6 +70,13 @@ type
 
   TExceptionProc = reference to procedure(const e: Exception);
 
+  IAwaitableGroup = interface
+    function CancelAll: Boolean;
+    function WaitForAll(maxWait_ms: cardinal = INFINITE): Boolean;
+    function Any: Boolean;
+    function IsEmpty: Boolean;
+  end;
+
   IAwaitable = interface
     procedure Await(const proc: TProc);overload;
     ///  Called when an unhandled exception occurs in the async function
@@ -78,7 +84,7 @@ type
     function OnException(const proc : TExceptionProc) : IAwaitable;
 
 
-    function GroupedBy(const aGroup : IOmniTaskGroup) : IAwaitable;
+    function GroupedBy(const aGroup : IAwaitableGroup) : IAwaitable;
 
     ///  Called when the cancellation token is signalled.
     ///  Note : must be called before Await.
@@ -96,7 +102,7 @@ type
     ///  Note : must be called before Await.
     function OnCancellation(const proc : TProc) : IAwaitable<TResult>;
 
-    function GroupedBy(const aGroup : IOmniTaskGroup) : IAwaitable<TResult>;
+    function GroupedBy(const aGroup : IAwaitableGroup) : IAwaitable<TResult>;
 
     ///  Runs the proc in the calling thread and provides the function result
     ///  as a parameter to the proc.
@@ -115,6 +121,10 @@ type
     class function Create : ICancellationTokenSource;
   end;
 
+  TAwaitableGroupFactory = class
+  public
+    class function New: IAwaitableGroup;
+  end;
 
 implementation
 
@@ -201,6 +211,13 @@ begin
   result := FOmniToken;
 end;
 
+
+{ TAwaitableGroupFactory }
+
+class function TAwaitableGroupFactory.New: IAwaitableGroup;
+begin
+  Result := VSoft.Awaitable.Impl.TAwaitableGroupFactory.New;
+end;
 
 initialization
   VSoft.CancellationToken.TCancellationTokenSourceFactory.RegisterTokenClass(VSoft.Awaitable.TCancellationToken);
