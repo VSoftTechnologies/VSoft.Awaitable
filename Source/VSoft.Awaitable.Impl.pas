@@ -230,7 +230,7 @@ end;
 function TAwaitable<TResult>.OnCancellation(const proc: TProc): IAwaitable<TResult>;
 begin
   if not Assigned(FCancellationToken) then
-    raise Exception.Create('OnCancellation is only available if cancellation token passed in Async');
+    raise Exception.Create('OnCancellation is only available if cancellation token passed in to TAsync.Configure');
 
   FCancelProc := proc;
   result := Self;
@@ -357,7 +357,7 @@ end;
 function TAwaitable.OnCancellation(const proc: TProc): IAwaitable;
 begin
   if not Assigned(FCancellationToken) then
-    raise Exception.Create('OnCancellation is only available if cancellation token passed in Async');
+    raise Exception.Create('OnCancellation is only available if a cancellation token passed in to TAsync.Configure');
 
   FCancelProc := proc;
   result := Self;
