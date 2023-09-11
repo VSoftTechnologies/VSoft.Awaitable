@@ -38,7 +38,7 @@ unit VSoft.Awaitable;
 interface
 
 uses
-  SysUtils,
+  System.SysUtils,
   VSoft.CancellationToken;
 
 type
@@ -130,6 +130,7 @@ implementation
 
 uses
   OtlSync,
+  WinApi.Windows,
   VSoft.Awaitable.Impl;
 
 type
@@ -142,6 +143,7 @@ type
     function GetOmniToken : IOmniCancellationToken;
     procedure Cancel;
     procedure Reset;
+    function WaitFor(Timeout: Cardinal): TWaitResult;
     property OmniToken : IOmniCancellationToken read GetOmniToken implements IOmniCancellationToken;
   public
     constructor Create;override;
@@ -204,6 +206,21 @@ end;
 procedure TCancellationToken.Reset;
 begin
   FOmniToken.Clear;
+end;
+
+function TCancellationToken.WaitFor(Timeout: Cardinal): TWaitResult;
+var
+  h : THandle;
+begin
+  h := GetHandle;
+  case WaitForMultipleObjectsEx(1, @h, True, Timeout, False) of
+    WAIT_ABANDONED: Result := TWaitResult.wrAbandoned;
+    WAIT_OBJECT_0: Result := TWaitResult.wrSignaled;
+    WAIT_TIMEOUT: Result := TWaitResult.wrTimeout;
+    WAIT_FAILED: Result := TWaitResult.wrError;
+  else
+    Result := TWaitResult.wrError;
+  end;
 end;
 
 function TCancellationToken.GetOmniToken: IOmniCancellationToken;
