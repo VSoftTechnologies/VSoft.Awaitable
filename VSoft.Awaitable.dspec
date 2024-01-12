@@ -1,7 +1,7 @@
 {
   "metadata": {
     "id": "VSoft.Awaitable",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "description": "Async/Await wrapper for OmniThreaLibrary",
     "authors": "Vincent Parrett",
     "projectUrl": "https://github.com/VSoftTechnologies/VSoft.Awaitable",
@@ -14,72 +14,128 @@
     {
       "compiler": "XE2",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "XE3",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "XE4",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "XE5",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "XE6",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "XE7",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "XE8",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "10.0",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "10.1",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "10.2",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "10.3",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "10.4",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "11.0",
       "platforms": "Win32, Win64",
-      "template": "default"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerWithCodeName$"
+		}
     },
     {
       "compiler": "12.0",
       "platforms": "Win32, Win64",
-      "template": "12+"
+      "template": "default",
+      "variables" : 
+		{
+		  "packageSource" : "Rad Studio $compilerNoPoint$"
+		}
     }
   ],
   "templates": [
@@ -92,7 +148,7 @@
        },
        {
          "id" : "Gabr42.OmniThreadLibrary",
-         "version" : "[3.7.9,]"
+         "version" : "[3.7.10,]"
        }
       ],
       "source": [
@@ -102,12 +158,12 @@
           "dest": "source"
         },
         {
-          "src": "packages\\Rad Studio $compilerWithCodeName$\\*.dpk",
-          "dest": "packages\\Rad Studio $compilerWithCodeName$"
+          "src": "packages\\$packageSource$\\*.dpk",
+          "dest": "packages\\$packageSource$"
         },
         {
-          "src": "packages\\Rad Studio $compilerWithCodeName$\\*.dproj",
-          "dest": "packages\\Rad Studio $compilerWithCodeName$"
+          "src": "packages\\$packageSource$\\*.dproj",
+          "dest": "packages\\$packageSource$"
         }
       ],
       "searchPaths": [
@@ -118,46 +174,7 @@
       "build": [
         {
           "id": "Runtime",
-          "project": ".\\packages\\Rad Studio $compilerWithCodeName$\\VSoft.AwaitableR.dproj"
-        }
-      ]
-    },
-    {
-      "name": "12+",
-      "dependencies" : [
-       {
-         "id" : "VSoft.CancellationToken",
-         "version" : "[0.1.2,]"
-       },
-       {
-         "id" : "Gabr42.OmniThreadLibrary",
-         "version" : "[3.7.9,]"
-       }
-      ],
-      "source": [
-        {
-          "src": "source\\*.pas",
-          "flatten": true,
-          "dest": "source"
-        },
-        {
-          "src": "packages\\Rad Studio $compilerNoPoint$\\*.dpk",
-          "dest": "packages\\Rad Studio $compilerNoPoint$"
-        },
-        {
-          "src": "packages\\Rad Studio $compilerNoPoint$\\*.dproj",
-          "dest": "packages\\Rad Studio $compilerNoPoint$"
-        }
-      ],
-      "searchPaths": [
-        {
-          "path": "source"
-        }
-      ],
-      "build": [
-        {
-          "id": "Runtime",
-          "project": ".\\packages\\Rad Studio $compilerNoPoint$\\VSoft.AwaitableR.dproj"
+          "project": ".\\packages\\$packageSource$\\VSoft.AwaitableR.dproj"
         }
       ]
     }
