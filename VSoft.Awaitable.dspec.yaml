@@ -1,0 +1,59 @@
+# DPM package spec file
+# Used to build packages
+
+min client version: 1.0
+# metadata describes the package to the user
+metadata:
+  id: VSoft.Awaitable
+  version: 0.7.0
+  authors: [ Vincent Parrett ]
+  description: Async/Await wrapper for OmniThreaLibrary
+  projectUrl: https://github.com/VSoftTechnologies/VSoft.Awaitable
+  repositoryUrl: https://github.com/VSoftTechnologies/VSoft.Awaitable
+  license: Apache-2.0
+  readme: README.md
+  copyright: Vincent Parrett and contributors
+  tags: [ async, await, omnithread ]
+  repositoryCommit: Id:bafa016869e602d022197ef10e341e929ad910de
+
+# define variable defaults - can be overriden in targetPlatforms
+variables:
+  packageSource: "Rad Studio $compilernoprefix$"
+
+# package folder names are a mess. 
+targetPlatforms:
+  - compiler from: delphixe2
+    compiler to: delphixe8
+    platforms: [ win32, win64 ]
+  - compiler from: delphi10.0
+    compiler to: delphi10.4
+    platforms: [ win32, win64 ]
+    variables:
+      packageSource: "Rad Studio $compilernoprefix$ $compilerCodeName$"
+  - compilers: [ delphi11 ]
+    platforms: [ win32, win64 ]
+    variables:
+      packageSource: "Rad Studio $compilernoprefix$.0 $compilerCodeName$"
+  - compiler from: delphi12
+    compiler to: delphi13
+    platforms: [ win32, win64 ]
+    variables:
+      packageSource: "Rad Studio $compilernoprefix$"
+
+templates:
+  - name: default
+    dependencies:
+      - id: VSoft.CancellationToken
+        version: "[0.1.4,]"
+      - id: Gabr42.OmniThreadLibrary
+        version: "[3.7.12,]"
+
+    source:
+      - src: ./LICENSE.txt
+      - src: ./source/*.pas
+      - src: ./packages/$packageSource$/*.dpk
+        dest: ./packages/$packageSource$
+      - src: ./packages/$packageSource$/*.dproj
+        dest: ./packages/$packageSource$
+    build:
+      - project: ./packages/$packageSource$/VSoft.AwaitableR.dproj
