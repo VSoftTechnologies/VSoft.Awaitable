@@ -14,7 +14,7 @@ metadata:
   readme: README.md
   copyright: Vincent Parrett and contributors
   tags: [ async, await, omnithread ]
-  repositoryCommit: Id:bafa016869e602d022197ef10e341e929ad910de
+  repositoryCommit: #HASH#
 
 # define variable defaults - can be overriden in targetPlatforms
 variables:
