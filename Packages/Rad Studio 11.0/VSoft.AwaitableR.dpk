@@ -32,7 +32,6 @@ package VSoft.AwaitableR;
 
 requires
   rtl,
-  OmniThreadLibraryRuntime,
   VSoft.CancellationTokenR;
 
 contains

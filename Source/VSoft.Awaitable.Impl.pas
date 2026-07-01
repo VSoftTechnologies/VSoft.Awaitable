@@ -24,17 +24,26 @@
 {                                                                           }
 {***************************************************************************}
 
-//NOTE : Do not use this unit directly, TAsync in VSoft.Awaitable.
+//NOTE : Do not use this unit directly,  use TAsync in VSoft.Awaitable.
 
 unit VSoft.Awaitable.Impl;
 
 interface
 
 uses
-  SysUtils,
+  System.Classes,
+  System.SysUtils,
+  VSoft.CancellationToken,
   VSoft.Awaitable;
 
 type
+  //  Internal interface used by the worker thread to join/leave a group.
+  IAwaitableGroupInternal = interface
+    ['{7C6E5D1B-2F4A-4C3E-9B8D-1A2B3C4D5E6F}']
+    procedure Join(const thread : TThread; const token : ICancellationToken);
+    procedure Leave(const thread : TThread);
+  end;
+
   TAwaitable = class(TInterfacedObject, IAwaitable)
   protected
   type
@@ -90,49 +99,203 @@ type
     class function New: IAwaitableGroup;
   end;
 
+  //  Starts worker on a background thread and arranges for completion to run on
+  //  the calling thread. Declared here (not as an implementation-local symbol) so
+  //  that the generic TAwaitable<TResult>.Await can call it.
+  procedure RunAsync(const worker : TProc; const completion : TExceptionProc;
+                     const group : IAwaitableGroupInternal; const token : ICancellationToken);
+
 implementation
 
 uses
-  OtlTask,
-  OtlTaskControl,
-  OtlParallel,
-  OtlSync;
+  Winapi.Windows,
+  Winapi.Messages,
+  System.SyncObjs,
+  System.Generics.Collections;
+
+const
+  WM_ASYNC_COMPLETE = WM_APP + 1;
+
+var
+  //  AllocateHWnd/DeallocateHWnd share a single utility window class that is
+  //  not reliably thread safe on older compilers - guard access.
+  GWndLock : TCriticalSection;
 
 type
-  TAwaitableGroup = class(TInterfacedObject, IAwaitableGroup, IOmniTaskGroup)
+  //  Owns a hidden message window on the CALLING thread and runs the completion
+  //  callback there when the worker posts to it - mirroring OmniThreadLibrary's
+  //  behaviour of invoking OnTerminated on the thread that created the task.
+  //  Frees itself once the completion has run.
+  TAsyncDispatcher = class
   private
-    FGroup: IOmniTaskGroup;
-    property Group: IOmniTaskGroup read FGroup implements IOmniTaskGroup;
+    FWnd        : HWND;
+    FCompletion : TExceptionProc;
+    procedure WndProc(var msg : TMessage);
   public
-    constructor Create;
+    constructor Create(const completion : TExceptionProc);
+    destructor Destroy; override;
+    property Wnd : HWND read FWnd;
+  end;
 
+  //  Runs the user proc/func on a worker thread, captures any exception, then
+  //  posts it (as the message WParam) to the dispatcher's window. The thread is
+  //  FreeOnTerminate - the RTL disposes of it once Execute returns.
+  TAsyncThread = class(TThread)
+  private
+    FWorker : TProc;
+    FGroup  : IAwaitableGroupInternal;
+    FWnd    : HWND;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(const worker : TProc; const wnd : HWND; const group : IAwaitableGroupInternal);
+  end;
+
+  TGroupMember = record
+    Thread : TThread;
+    Token  : ICancellationToken;
+  end;
+
+  TAwaitableGroup = class(TInterfacedObject, IAwaitableGroup, IAwaitableGroupInternal)
+  private
+    FLock     : TCriticalSection;
+    FAllDone  : TEvent;
+    FMembers  : TList<TGroupMember>;
+    function IndexOfThread(const thread : TThread) : integer;
+  protected
+    // IAwaitableGroup
     function CancelAll: Boolean;
     function WaitForAll(maxWait_ms: cardinal = INFINITE): Boolean;
     function Any: Boolean;
     function IsEmpty: Boolean;
+    // IAwaitableGroupInternal
+    procedure Join(const thread : TThread; const token : ICancellationToken);
+    procedure Leave(const thread : TThread);
+  public
+    constructor Create;
+    destructor Destroy; override;
   end;
 
 
-{ TAwait<TResult> }
+{ TAsyncDispatcher }
+
+constructor TAsyncDispatcher.Create(const completion: TExceptionProc);
+begin
+  //  Created on the calling thread - the hidden window belongs to this thread.
+  inherited Create;
+  FCompletion := completion;
+  GWndLock.Enter;
+  try
+    FWnd := AllocateHWnd(WndProc);
+  finally
+    GWndLock.Leave;
+  end;
+end;
+
+destructor TAsyncDispatcher.Destroy;
+begin
+  if FWnd <> 0 then
+  begin
+    GWndLock.Enter;
+    try
+      DeallocateHWnd(FWnd);
+    finally
+      GWndLock.Leave;
+    end;
+  end;
+  inherited;
+end;
+
+procedure TAsyncDispatcher.WndProc(var msg: TMessage);
+var
+  lExc : Exception;
+begin
+  if msg.Msg = WM_ASYNC_COMPLETE then
+  begin
+    //  Runs on the calling thread. Ownership of the captured exception (passed as
+    //  the message WParam, may be nil) belongs to the completion callback, which
+    //  either hands it to OnException (and frees it) or re-raises it.
+    lExc := Exception(Pointer(msg.WParam));
+    try
+      if Assigned(FCompletion) then
+        FCompletion(lExc)
+      else
+        lExc.Free;
+    finally
+      Free; // self destruct once the completion has run.
+    end;
+  end
+  else
+    msg.Result := DefWindowProc(FWnd, msg.Msg, msg.WParam, msg.LParam);
+end;
+
+
+{ TAsyncThread }
+
+constructor TAsyncThread.Create(const worker: TProc; const wnd: HWND; const group: IAwaitableGroupInternal);
+begin
+  inherited Create(true);
+  FreeOnTerminate := true;
+  FWorker := worker;
+  FWnd := wnd;
+  FGroup := group;
+end;
+
+procedure TAsyncThread.Execute;
+var
+  lExc : Exception;
+begin
+  lExc := nil;
+  try
+    FWorker;
+  except
+    //  hard cast - we know a raised exception object is an Exception.
+    lExc := Exception(AcquireExceptionObject);
+  end;
+
+  //  Leave the group from the worker thread so a caller blocking the calling
+  //  thread in WaitForAll still sees the task drain (the completion callback
+  //  runs later, once that thread pumps messages).
+  if FGroup <> nil then
+    FGroup.Leave(Self);
+
+  //  Marshal completion (and ownership of lExc) back to the calling thread.
+  PostMessage(FWnd, WM_ASYNC_COMPLETE, WPARAM(Pointer(lExc)), 0);
+end;
+
+
+procedure RunAsync(const worker : TProc; const completion : TExceptionProc;
+                   const group : IAwaitableGroupInternal; const token : ICancellationToken);
+var
+  dispatcher : TAsyncDispatcher;
+  thread : TAsyncThread;
+begin
+  dispatcher := TAsyncDispatcher.Create(completion);
+  thread := TAsyncThread.Create(worker, dispatcher.Wnd, group);
+  if group <> nil then
+    group.Join(thread, token);
+  thread.Start;
+end;
+
+
+{ TAwaitable<TResult> }
 
 procedure TAwaitable<TResult>.Await(const proc: TResultProc<TResult>);
 var
-  omniTask  : IOmniTaskControl;
-  task: TOmniTaskDelegate;
-  taskConfig: IOmniTaskConfig;
   theResult : TResult;
 
   lAsyncFunc : TAsyncFunc<TResult>;
   lcAsyncFunc : TAsyncCancellableFunc<TResult>;
 
-
   lOnException : TExceptionProc;
   lCancelledProc : TProc;
   lCallType : TCallType;
 
-  omniToken : IOmniCancellationToken;
   cancelToken : ICancellationToken;
-  lGroup: IOmniTaskGroup;
+  lGroup : IAwaitableGroupInternal;
+
+  worker : TProc;
+  completion : TExceptionProc;
 begin
   //local references for closures.
   lAsyncFunc :=  FAsyncFunc;
@@ -140,21 +303,19 @@ begin
 
   lOnException := FExceptionProc;
   lCancelledProc := FCancelProc;
-  lGroup := FGroup as IOmniTaskGroup;
+
+  if FGroup <> nil then
+    Supports(FGroup, IAwaitableGroupInternal, lGroup)
+  else
+    lGroup := nil;
 
   cancelToken := FCancellationToken;
 
   theResult := Default(TResult);
 
-  taskConfig := Parallel.TaskConfig;
-
-  omniToken := cancelToken  as IOmniCancellationToken;
-  if Assigned(omniToken) then
-    taskConfig.CancelWith(omniToken);
-
   lCallType := FCallType;
 
-  task := procedure (const omniTask: IOmniTask)
+  worker := procedure
     begin
       case lCallType of
         ctFunc              : theResult := lAsyncFunc;
@@ -164,43 +325,35 @@ begin
       end;
     end;
 
-  omniTask := CreateTask(task, 'VSoft.Async').Unobserved.OnTerminated(
-    procedure (const task: IOmniTaskControl)
-    var
-      exc: Exception;
+  completion := procedure(const exc : Exception)
     begin
-    //  terminated.Call(task);
-      try
-        exc := task.DetachException;
-        if assigned(exc) then
+      if exc <> nil then
+      begin
+        if Assigned(lOnException) then
         begin
-          if Assigned(lOnException) then
-            lOnException(exc)
-          else
-            raise exc;
+          //  we own exc here - free it once the handler has run.
+          try
+            lOnException(exc);
+          finally
+            exc.Free;
+          end;
         end
         else
+          raise exc; //ownership transfers to the exception handling machinery.
+      end
+      else
+      begin
+        if Assigned(cancelToken) and cancelToken.IsCancelled then
         begin
-          if Assigned(cancelToken) and cancelToken.IsCancelled then
-          begin
-            if Assigned(lCancelledProc) then
-              lCancelledProc;
-            exit;
-          end;
-          proc(theResult);
+          if Assigned(lCancelledProc) then
+            lCancelledProc;
+          exit;
         end;
-      finally
-        if lGroup <> nil then
-          omniTask.Leave(lGroup);
+        proc(theResult);
       end;
-    end);
+    end;
 
-  if lGroup <> nil then
-    omniTask.Join(lGroup);
-
-  Parallel.ApplyConfig(taskConfig, omniTask);
-  omniTask.Unobserved;
-  Parallel.Start(omniTask, taskConfig);
+  RunAsync(worker, completion, lGroup, cancelToken);
 end;
 
 constructor TAwaitable<TResult>.Create(const asyncFunc: TAsyncCancellableFunc<TResult>;const cancellationToken : ICancellationToken );
@@ -248,43 +401,38 @@ end;
 
 procedure TAwaitable.Await(const proc: TProc);
 var
-  omniTask  : IOmniTaskControl;
-  task: TOmniTaskDelegate;
-  taskConfig: IOmniTaskConfig;
-
   lProc  : TAsyncProc;
   lcProc : TAsyncCancellableProc;
 
   lOnException : TExceptionProc;
   lCancelledProc : TProc;
-  lGroup : IOmniTaskGroup;
+  lGroup : IAwaitableGroupInternal;
 
   lCallType : TCallType;
 
-  omniToken : IOmniCancellationToken;
   cancelToken : ICancellationToken;
+
+  worker : TProc;
+  completion : TExceptionProc;
 begin
 
   //local references for closures.
   lProc :=  FAsyncProc;
   lcProc := FCancellableAsyncProc;
 
-
   lOnException := FExceptionProc;
   lCancelledProc := FCancelProc;
-  lGroup := (FGroup as IOmniTaskGroup);
+
+  if FGroup <> nil then
+    Supports(FGroup, IAwaitableGroupInternal, lGroup)
+  else
+    lGroup := nil;
 
   cancelToken := FCancellationToken;
 
-  taskConfig := Parallel.TaskConfig;
-
-  omniToken := cancelToken  as IOmniCancellationToken;
-  if Assigned(omniToken) then
-    taskConfig.CancelWith(omniToken);
-
   lCallType := FCallType;
 
-  task := procedure (const omniTask: IOmniTask)
+  worker := procedure
     begin
       case lCallType of
         ctProc              : lProc;
@@ -294,44 +442,35 @@ begin
       end;
     end;
 
-
-  omniTask := CreateTask(task, 'VSoft.Async').Unobserved.OnTerminated(
-    procedure (const task: IOmniTaskControl)
-    var
-      exc: Exception;
+  completion := procedure(const exc : Exception)
     begin
-      try
-        exc := task.DetachException;
-        if assigned(exc) then
+      if exc <> nil then
+      begin
+        if Assigned(lOnException) then
         begin
-          if Assigned(lOnException) then
-            lOnException(exc)
-          else
-            raise exc;
+          //  we own exc here - free it once the handler has run.
+          try
+            lOnException(exc);
+          finally
+            exc.Free;
+          end;
         end
         else
+          raise exc; //ownership transfers to the exception handling machinery.
+      end
+      else
+      begin
+        if Assigned(cancelToken) and cancelToken.IsCancelled then
         begin
-          if Assigned(cancelToken) and cancelToken.IsCancelled then
-          begin
-            if Assigned(lCancelledProc) then
-              lCancelledProc;
-            exit;
-          end;
-          proc;
+          if Assigned(lCancelledProc) then
+            lCancelledProc;
+          exit;
         end;
-      finally
-        if lGroup <> nil then
-          omniTask.Leave(lGroup);
+        proc;
       end;
-    end);
+    end;
 
-  if lGroup <> nil then
-    omniTask.Join(lGroup);
-
-  Parallel.ApplyConfig(taskConfig, omniTask);
-  omniTask.Unobserved;
-  Parallel.Start(omniTask, taskConfig);
-
+  RunAsync(worker, completion, lGroup, cancelToken);
 end;
 
 constructor TAwaitable.Create(const asyncProc: TAsyncCancellableProc; const cancellationToken: ICancellationToken);
@@ -372,43 +511,107 @@ end;
 
 { TAwaitableGroup }
 
-function TAwaitableGroup.Any: Boolean;
-begin
-  Result := FGroup.Tasks.Count > 0;
-end;
-
-function TAwaitableGroup.CancelAll: Boolean;
-var
-  lTask: IOmniTaskControl;
-begin
-  Result := True;
-  for lTask in FGroup do
-  begin
-    if lTask.CancellationToken = nil then
-      Exit(False);
-  end;
-
-  for lTask in FGroup do
-  begin
-    if lTask.CancellationToken <> nil then
-      lTask.CancellationToken.Signal
-  end;
-end;
-
 constructor TAwaitableGroup.Create;
 begin
   inherited;
-  FGroup := TOmniTaskGroup.Create;
+  FLock := TCriticalSection.Create;
+  //  manual reset, starts signalled (empty group == all done).
+  FAllDone := TEvent.Create(nil, true, true, '');
+  FMembers := TList<TGroupMember>.Create;
+end;
+
+destructor TAwaitableGroup.Destroy;
+begin
+  FMembers.Free;
+  FAllDone.Free;
+  FLock.Free;
+  inherited;
+end;
+
+function TAwaitableGroup.IndexOfThread(const thread: TThread): integer;
+var
+  i : integer;
+begin
+  for i := 0 to FMembers.Count - 1 do
+    if FMembers[i].Thread = thread then
+      Exit(i);
+  result := -1;
+end;
+
+procedure TAwaitableGroup.Join(const thread: TThread; const token: ICancellationToken);
+var
+  member : TGroupMember;
+begin
+  FLock.Enter;
+  try
+    member.Thread := thread;
+    member.Token := token;
+    FMembers.Add(member);
+    FAllDone.ResetEvent;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TAwaitableGroup.Leave(const thread: TThread);
+var
+  idx : integer;
+begin
+  FLock.Enter;
+  try
+    idx := IndexOfThread(thread);
+    if idx >= 0 then
+      FMembers.Delete(idx);
+    if FMembers.Count = 0 then
+      FAllDone.SetEvent;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TAwaitableGroup.Any: Boolean;
+begin
+  FLock.Enter;
+  try
+    result := FMembers.Count > 0;
+  finally
+    FLock.Leave;
+  end;
 end;
 
 function TAwaitableGroup.IsEmpty: Boolean;
 begin
-  Result := FGroup.Tasks.Count = 0;
+  FLock.Enter;
+  try
+    result := FMembers.Count = 0;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TAwaitableGroup.CancelAll: Boolean;
+var
+  i : integer;
+  manage : ICancellationTokenManage;
+begin
+  FLock.Enter;
+  try
+    for i := 0 to FMembers.Count - 1 do
+      if FMembers[i].Token = nil then
+        Exit(False);
+
+    for i := 0 to FMembers.Count - 1 do
+      if Supports(FMembers[i].Token, ICancellationTokenManage, manage) then
+        manage.Cancel;
+    result := True;
+  finally
+    FLock.Leave;
+  end;
 end;
 
 function TAwaitableGroup.WaitForAll(maxWait_ms: cardinal): Boolean;
 begin
-  Result := FGroup.WaitForAll(maxWait_ms);
+  result := FAllDone.WaitFor(maxWait_ms) = TWaitResult.wrSignaled;
 end;
 
 { TAwaitableGroupFactory }
@@ -417,5 +620,11 @@ class function TAwaitableGroupFactory.New: IAwaitableGroup;
 begin
   Result := TAwaitableGroup.Create;
 end;
+
+initialization
+  GWndLock := TCriticalSection.Create;
+
+finalization
+  GWndLock.Free;
 
 end.

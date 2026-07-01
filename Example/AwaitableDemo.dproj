@@ -11,10 +11,11 @@
         <AppType>Application</AppType>
     </PropertyGroup>
     <PropertyGroup>
-        <DPMCompiler>11.0</DPMCompiler>
-        <DPMCache Condition="'$(DPMCache)' == ''">$(APPDATA)\.dpm\packages</DPMCache>
-        <DPM>$(DPMCache)\$(DPMCompiler)\$(Platform)</DPM>
-        <DPMSearch Condition="'$(Platform)'=='Win32'">$(DPM)\VSoft.CancellationToken\0.1.0\lib;$(DPM)\Gabr42.OmniThreadLibrary\3.7.8\lib;</DPMSearch>
+        <DPMCompiler>delphixe2</DPMCompiler>
+        <DPMCache Condition="'$(DPMCache)' == ''">$(APPDATA)\.dpm\package_cache</DPMCache>
+        <DPM>$(DPMCache)\$(DPMCompiler)</DPM>
+        <DPMSearch Condition="'$(Platform)'=='Win32'">$(DPM)\VSoft.CancellationToken\0.1.6\lib\Win32;</DPMSearch>
+        <DPMExe>I:\Github\DelphiPackageManager\DPMMaster\Output\dpm.exe</DPMExe>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
         <Base>true</Base>
@@ -960,11 +961,14 @@
         </BorlandProject>
         <ProjectFileVersion>12</ProjectFileVersion>
         <DPM>
-            <PackageReference id="Gabr42.OmniThreadLibrary" platform="Win32" version="3.7.8"/>
             <PackageReference id="VSoft.CancellationToken" platform="Win32" version="0.1.0"/>
+            <Packages>
+                <PackageReference id="VSoft.CancellationToken" version="0.1.6" manifestHash="sha256:59d4968bebbc3d777581754dc567ffd713f23ccb296b4c58027df12612a59b00"/>
+            </Packages>
         </DPM>
     </ProjectExtensions>
     <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
     <Import Project="$(MSBuildProjectName).deployproj" Condition="Exists('$(MSBuildProjectName).deployproj')"/>
+    <Import Project="$(DPMCache)\DPM.CopyLocal.targets" Condition="Exists('$(DPMCache)\DPM.CopyLocal.targets')"/>
 </Project>

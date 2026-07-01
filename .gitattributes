@@ -14,4 +14,3 @@
 
 #update commit hash in dspec 
 *.dspec filter=insert-hash
-*.dspec.yaml filter=insert-hash

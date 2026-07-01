@@ -53,7 +53,7 @@ begin
           i: Integer;
         begin
             result := 'Hello ' + value;
-            for i := 0 to 2000 do
+            for i := 0 to 100 do
             begin
               Sleep(1);
               //in loops, check the token

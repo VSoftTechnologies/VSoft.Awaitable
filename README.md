@@ -1,8 +1,8 @@
 # VSoft.Awaitable
 
-This is a simple library for making Asynchronous function calls. It is a wrapper over [OmniThreadLibrary](https://github.com/gabr42/OmniThreadLibrary) and is based on it's own Parallel.Async functionality.
+This is a simple library for making Asynchronous function calls. It is built on standard Delphi threading primitives (`TThread`) and has no third‑party dependencies other than [VSoft.CancellationToken](https://github.com/VSoftTechnologies/VSoft.CancellationToken).
 
-Parallel.Async does not provide a simple way to cancel calls, and be notified of the cancellation, and it does not allow the returning of results.
+It provides a simple way to run work on a background thread, cancel it and be notified of the cancellation, return typed results, and have your completion/exception/cancellation callbacks invoked back on the calling thread.
 
 ## Usage
 

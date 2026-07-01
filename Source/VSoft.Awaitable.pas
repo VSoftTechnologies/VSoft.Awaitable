@@ -25,12 +25,13 @@
 {***************************************************************************}
 
 {
- This is a simple wrapper around OmniThreadLibrart which extends it's async/await
- idea to allow cancellation and returning of results.
+ A simple async/await library built on standard Delphi threading primitives
+ (TThread). It extends the async/await idea to allow cancellation and the
+ returning of results.
 
- Note we use our own cancellation token interface here so that we can avoid spreading
- omnithread everywhere. This could potentially wrap System.Threading for later versions
- of delphi if they ever implement cancellation tokens etc.
+ Cancellation is provided via VSoft.CancellationToken - its default RTL token
+ (backed by a TEvent) is used directly, so no custom token class is registered
+ here.
 }
 
 unit VSoft.Awaitable;
@@ -43,8 +44,6 @@ uses
 
 type
   //  aliases from VSoft.CancellationToken for backwards compatibility
-  //  note that we register our own cancellationtoken class here that
-  //  wraps the OmniThreadLibrary's cancellationtoken
 
   ///  ICancellationToken is passed to async methods
   ///  so that they can determin if the caller has
@@ -129,25 +128,7 @@ type
 implementation
 
 uses
-  OtlSync,
-  WinApi.Windows,
   VSoft.Awaitable.Impl;
-
-type
-  TCancellationToken = class(TCancellationTokenBase, ICancellationToken, ICancellationTokenManage, IOmniCancellationToken)
-  private
-    FOmniToken : IOmniCancellationToken;
-  protected
-    function  GetHandle: THandle;
-    function  IsCancelled: boolean;
-    function GetOmniToken : IOmniCancellationToken;
-    procedure Cancel;
-    procedure Reset;
-    function WaitFor(Timeout: Cardinal): TWaitResult;
-    property OmniToken : IOmniCancellationToken read GetOmniToken implements IOmniCancellationToken;
-  public
-    constructor Create;override;
-  end;
 
 
 class function TAsync.Configure(const proc: TAsyncProc): IAwaitable;
@@ -181,62 +162,11 @@ begin
   result := VSoft.CancellationToken.TCancellationTokenSourceFactory.Create;
 end;
 
-{ TCancellationToken }
-
-procedure TCancellationToken.Cancel;
-begin
-  FOmniToken.Signal;
-end;
-
-constructor TCancellationToken.Create;
-begin
-  FOmniToken := CreateOmniCancellationToken;
-end;
-
-function TCancellationToken.GetHandle: THandle;
-begin
-  result := FOmniToken.Handle;
-end;
-
-function TCancellationToken.IsCancelled: boolean;
-begin
-  result := FOmniToken.IsSignalled;
-end;
-
-procedure TCancellationToken.Reset;
-begin
-  FOmniToken.Clear;
-end;
-
-function TCancellationToken.WaitFor(Timeout: Cardinal): TWaitResult;
-var
-  h : THandle;
-begin
-  h := GetHandle;
-  case WaitForMultipleObjectsEx(1, @h, True, Timeout, False) of
-    WAIT_ABANDONED: Result := TWaitResult.wrAbandoned;
-    WAIT_OBJECT_0: Result := TWaitResult.wrSignaled;
-    WAIT_TIMEOUT: Result := TWaitResult.wrTimeout;
-    WAIT_FAILED: Result := TWaitResult.wrError;
-  else
-    Result := TWaitResult.wrError;
-  end;
-end;
-
-function TCancellationToken.GetOmniToken: IOmniCancellationToken;
-begin
-  result := FOmniToken;
-end;
-
-
 { TAwaitableGroupFactory }
 
 class function TAwaitableGroupFactory.New: IAwaitableGroup;
 begin
   Result := VSoft.Awaitable.Impl.TAwaitableGroupFactory.New;
 end;
-
-initialization
-  VSoft.CancellationToken.TCancellationTokenSourceFactory.RegisterTokenClass(VSoft.Awaitable.TCancellationToken);
 
 end.

@@ -1,179 +1,42 @@
-{
- "metadata": {
-  "id": "VSoft.Awaitable",
-  "version": "0.7.0",
-  "description": "Async/Await wrapper for OmniThreaLibrary",
-  "authors": "Vincent Parrett",
-  "projectUrl": "https://github.com/VSoftTechnologies/VSoft.Awaitable",
-  "repositoryUrl": "https://github.com/VSoftTechnologies/VSoft.Awaitable",
-  "repositoryCommit": "#HASH#",   
-  "license": "Apache-2.0",
-  "copyright": "Vincent Parrett and contributors",
-  "tags": "async await omnithread",
-  "readme": "README.md"
- },
- "targetPlatforms": [
-  {
-   "compiler": "12.0",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerNoPoint$"
-   }
-  },
-  {
-   "compiler": "11.0",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "10.4",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "10.3",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "10.2",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "10.1",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "10.0",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "XE8",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "XE7",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "XE6",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "XE5",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "XE4",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "XE3",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "XE2",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerWithCodeName$"
-   }
-  },
-  {
-   "compiler": "13.0",
-   "platforms": "Win32, Win64",
-   "template": "default",
-   "variables": {
-    "packageSource": "Rad Studio $compilerNoPoint$"
-   }
-  }
- ],
- "templates": [
-  {
-   "name": "default",
-   "dependencies": [
-    {
-     "id": "VSoft.CancellationToken",
-     "version": "[0.1.4,]"
-    },
-    {
-     "id": "Gabr42.OmniThreadLibrary",
-     "version": "[3.7.12,]"
-    }
-   ],
-   "source": [
-    {
-     "src": "source\\*.pas",
-     "dest": "source",
-     "flatten": true
-    },
-    {
-     "src": "packages\\$packageSource$\\*.dpk",
-     "dest": "packages\\$packageSource$"
-    },
-    {
-     "src": "packages\\$packageSource$\\*.dproj",
-     "dest": "packages\\$packageSource$"
-    }
-   ],
-   "searchPaths": [
-    {
-     "path": "source"
-    }
-   ],
-   "build": [
-    {
-     "id": "Runtime",
-     "project": ".\\packages\\$packageSource$\\VSoft.AwaitableR.dproj",
-     "config": "Release"
-    }
-   ]
-  }
- ]
-}
+# DPM package spec file
+# Used to build packages
+
+min client version: 1.0
+# metadata describes the package to the user
+metadata:
+  id: VSoft.Awaitable
+  version: 1.0.0
+  authors: [Vincent Parrett]
+  description: Async/Await for Delphi built on standard TThread primitives
+  projectUrl: https://github.com/VSoftTechnologies/VSoft.Awaitable
+  repositoryUrl: https://github.com/VSoftTechnologies/VSoft.Awaitable
+  license: Apache-2.0
+  readme: README.md
+  copyright: Vincent Parrett and contributors
+  tags: [async, await, thread]
+  repositoryCommit: #HASH#
+
+# define variable defaults - can be overriden in targetPlatforms
+variables:
+  packageSource: "Rad Studio $compilernoprefix$"
+
+targetPlatforms:
+  - compiler from: delphixe2
+    compiler to: delphi13.0
+    platforms: [win32, win64]
+
+templates:
+  - name: default
+    dependencies:
+      - id: VSoft.CancellationToken
+        version: "[0.1.4,]"
+
+    source:
+      - src: ./LICENSE.txt
+      - src: ./source/*.pas
+      - src: ./packages/$packageSource$/*.dpk
+        dest: ./packages/$packageSource$
+      - src: ./packages/$packageSource$/*.dproj
+        dest: ./packages/$packageSource$
+    build:
+      - project: ./packages/$packageSource$/VSoft.AwaitableR.dproj
