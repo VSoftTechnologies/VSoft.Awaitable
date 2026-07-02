@@ -1,4 +1,4 @@
-﻿{***************************************************************************}
+{***************************************************************************}
 {                                                                           }
 {           VSoft.Awaitable - Async/Await for Delphi                        }
 {                                                                           }
@@ -25,6 +25,16 @@
 {***************************************************************************}
 
 //NOTE : Do not use this unit directly,  use TAsync in VSoft.Awaitable.
+
+//  Design note - message pump requirement
+//  ---------------------------------------
+//  Completions (Await / OnException / OnCancellation) are marshalled back to the
+//  thread that called Await, by posting a message to a hidden window owned by that
+//  thread. That thread MUST pump its message queue for the callbacks to run - this
+//  matches how OmniThreadLibrary (the previous implementation) delivered
+//  OnTerminated. In practice this library is driven from the main (VCL) thread,
+//  which always pumps. Using it from a thread that never pumps messages is not
+//  supported and will leak the pending completion.
 
 unit VSoft.Awaitable.Impl;
 
@@ -105,6 +115,11 @@ type
   procedure RunAsync(const worker : TProc; const completion : TExceptionProc;
                      const group : IAwaitableGroupInternal; const token : ICancellationToken);
 
+  //  Diagnostics for tests - the number of live per-thread dispatchers (one hidden
+  //  window each). Used to verify that tasks started from the same thread share a
+  //  single dispatcher, and that dispatchers free themselves once idle.
+  function AwaitableLiveDispatcherCount : integer;
+
 implementation
 
 uses
@@ -115,40 +130,56 @@ uses
 
 const
   WM_ASYNC_COMPLETE = WM_APP + 1;
-
-var
-  //  AllocateHWnd/DeallocateHWnd share a single utility window class that is
-  //  not reliably thread safe on older compilers - guard access.
-  GWndLock : TCriticalSection;
+  //  bounded retry when the target thread's message queue is momentarily full.
+  CMaxPostRetries   = 100;
 
 type
-  //  Owns a hidden message window on the CALLING thread and runs the completion
-  //  callback there when the worker posts to it - mirroring OmniThreadLibrary's
-  //  behaviour of invoking OnTerminated on the thread that created the task.
-  //  Frees itself once the completion has run.
+  //  One queued completion - the callback to run on the calling thread plus the
+  //  captured exception (may be nil). Ownership of Exc passes to Completion, which
+  //  either hands it to OnException (and frees it) or re-raises it.
+  TCompletionItem = record
+    Completion : TExceptionProc;
+    Exc        : Exception;
+  end;
+
+  //  Owns a single hidden message window PER CALLING THREAD (mirroring
+  //  OmniThreadLibrary's TOmniEventMonitorPool, which keeps one monitor window per
+  //  thread rather than one per task). Worker threads push their completion onto a
+  //  thread-safe queue and post a lightweight wake-up; the WndProc (running on the
+  //  owning thread) drains the queue. The dispatcher is reference counted by the
+  //  number of in-flight tasks and frees itself - on its owning thread - once idle.
   TAsyncDispatcher = class
   private
-    FWnd        : HWND;
-    FCompletion : TExceptionProc;
+    FWnd      : HWND;
+    FThreadId : cardinal;
+    FRefCount : integer;        // in-flight tasks; only mutated on the owning thread
+    FLock     : TCriticalSection;
+    FQueue    : TQueue<TCompletionItem>;
     procedure WndProc(var msg : TMessage);
+    procedure DrainQueue;
+    procedure MaybeFreeIfIdle;
   public
-    constructor Create(const completion : TExceptionProc);
+    constructor Create(const threadId : cardinal);
     destructor Destroy; override;
+    //  Called on the worker thread - enqueues the completion and wakes the owner.
+    procedure PostCompletion(const completion : TExceptionProc; const exc : Exception);
     property Wnd : HWND read FWnd;
   end;
 
-  //  Runs the user proc/func on a worker thread, captures any exception, then
-  //  posts it (as the message WParam) to the dispatcher's window. The thread is
+  //  Runs the user proc/func on a worker thread, captures any exception, then hands
+  //  it (and ownership) to the calling thread's dispatcher. The thread is
   //  FreeOnTerminate - the RTL disposes of it once Execute returns.
   TAsyncThread = class(TThread)
   private
-    FWorker : TProc;
-    FGroup  : IAwaitableGroupInternal;
-    FWnd    : HWND;
+    FWorker     : TProc;
+    FCompletion : TExceptionProc;
+    FDispatcher : TAsyncDispatcher;
+    FGroup      : IAwaitableGroupInternal;
   protected
     procedure Execute; override;
   public
-    constructor Create(const worker : TProc; const wnd : HWND; const group : IAwaitableGroupInternal);
+    constructor Create(const worker : TProc; const completion : TExceptionProc;
+                       const dispatcher : TAsyncDispatcher; const group : IAwaitableGroupInternal);
   end;
 
   TGroupMember = record
@@ -176,24 +207,83 @@ type
     destructor Destroy; override;
   end;
 
+var
+  //  AllocateHWnd/DeallocateHWnd share a single utility window class that is
+  //  not reliably thread safe on older compilers - guard access. Also guards the
+  //  per-thread dispatcher registry below.
+  GWndLock     : TCriticalSection;
+  //  One dispatcher per calling thread, keyed by thread id.
+  GDispatchers : TDictionary<cardinal, TAsyncDispatcher>;
+  //  Live dispatcher count, for test diagnostics only.
+  GLiveDispatchers : integer;
 
-{ TAsyncDispatcher }
 
-constructor TAsyncDispatcher.Create(const completion: TExceptionProc);
+function AwaitableLiveDispatcherCount : integer;
 begin
-  //  Created on the calling thread - the hidden window belongs to this thread.
-  inherited Create;
-  FCompletion := completion;
+  result := GLiveDispatchers;
+end;
+
+
+{ dispatcher pool }
+
+//  Returns the dispatcher for the current thread, creating it on first use, and
+//  takes a reference for the task about to be scheduled. Runs on the calling thread.
+function AcquireDispatcher : TAsyncDispatcher;
+var
+  tid  : cardinal;
+  disp : TAsyncDispatcher;
+begin
+  tid := GetCurrentThreadId;
   GWndLock.Enter;
   try
-    FWnd := AllocateHWnd(WndProc);
+    if not GDispatchers.TryGetValue(tid, disp) then
+    begin
+      //  AllocateHWnd (inside Create) runs under GWndLock which we already hold.
+      disp := TAsyncDispatcher.Create(tid);
+      GDispatchers.Add(tid, disp);
+    end;
+    Inc(disp.FRefCount);
   finally
     GWndLock.Leave;
   end;
+  result := disp;
+end;
+
+//  Releases a reference taken by AcquireDispatcher without a completion having run -
+//  used only to roll back when scheduling fails. Runs on the owning thread.
+procedure ReleaseDispatcher(const disp : TAsyncDispatcher);
+begin
+  Dec(disp.FRefCount);
+  disp.MaybeFreeIfIdle;
+end;
+
+
+{ TAsyncDispatcher }
+
+constructor TAsyncDispatcher.Create(const threadId: cardinal);
+begin
+  //  Created on the calling thread - the hidden window belongs to this thread.
+  //  Caller (AcquireDispatcher) holds GWndLock, so AllocateHWnd is serialised.
+  inherited Create;
+  FThreadId := threadId;
+  FLock := TCriticalSection.Create;
+  FQueue := TQueue<TCompletionItem>.Create;
+  FWnd := AllocateHWnd(WndProc);
+  InterlockedIncrement(GLiveDispatchers);
 end;
 
 destructor TAsyncDispatcher.Destroy;
+var
+  item : TCompletionItem;
 begin
+  //  Free any completions that were queued but never delivered (e.g. shutdown).
+  while FQueue.Count > 0 do
+  begin
+    item := FQueue.Dequeue;
+    if item.Exc <> nil then
+      item.Exc.Free;
+  end;
+  FQueue.Free;
   if FWnd <> 0 then
   begin
     GWndLock.Enter;
@@ -203,26 +293,118 @@ begin
       GWndLock.Leave;
     end;
   end;
+  FLock.Free;
+  InterlockedDecrement(GLiveDispatchers);
   inherited;
 end;
 
-procedure TAsyncDispatcher.WndProc(var msg: TMessage);
+procedure TAsyncDispatcher.PostCompletion(const completion: TExceptionProc; const exc: Exception);
 var
-  lExc : Exception;
+  item     : TCompletionItem;
+  wnd      : HWND;
+  attempts : integer;
+begin
+  item.Completion := completion;
+  item.Exc := exc;
+
+  //  Capture the window handle BEFORE releasing the lock. Once the item is queued
+  //  and the lock released, another thread's wake-up may drain it and free this
+  //  dispatcher, so we must not touch any field of Self afterwards - only 'wnd'.
+  //  While we hold FLock a drain cannot dequeue our item, so Self stays alive here.
+  wnd := FWnd;
+  FLock.Enter;
+  try
+    FQueue.Enqueue(item);
+  finally
+    FLock.Leave;
+  end;
+
+  //  Wake the owning thread. Tolerate a momentarily full queue (OTL does the same);
+  //  the payload is safely queued, so a lost wake-up is recovered by the next one
+  //  or by TAwaitableGroup.WaitForAll pumping.
+  attempts := 0;
+  while not PostMessage(wnd, WM_ASYNC_COMPLETE, 0, 0) do
+  begin
+    if GetLastError <> ERROR_NOT_ENOUGH_QUOTA then
+      Break;
+    Inc(attempts);
+    if attempts >= CMaxPostRetries then
+      Break;
+    Sleep(1);
+  end;
+end;
+
+procedure TAsyncDispatcher.DrainQueue;
+var
+  item    : TCompletionItem;
+  hasItem : boolean;
+  lExc    : Exception;
+begin
+  //  Runs on the owning thread. Drain everything currently queued.
+  repeat
+    hasItem := false;
+    FLock.Enter;
+    try
+      if FQueue.Count > 0 then
+      begin
+        item := FQueue.Dequeue;
+        hasItem := true;
+      end;
+    finally
+      FLock.Leave;
+    end;
+
+    if hasItem then
+    begin
+      //  Account for the completed task before running the callback, so a callback
+      //  that raises still leaves the reference count correct.
+      Dec(FRefCount);
+      lExc := item.Exc;
+      //  Ownership of lExc belongs to the completion callback, which either hands it
+      //  to OnException (and frees it) or re-raises it.
+      if Assigned(item.Completion) then
+        item.Completion(lExc)
+      else if lExc <> nil then
+        lExc.Free;
+    end;
+  until not hasItem;
+end;
+
+procedure TAsyncDispatcher.MaybeFreeIfIdle;
+var
+  needFree : boolean;
+begin
+  //  Runs on the owning thread. Free (and drop from the pool) once no tasks are in
+  //  flight and nothing is queued. A completion that scheduled more work (reentrant
+  //  Await) will have re-incremented FRefCount, keeping us alive.
+  GWndLock.Enter;
+  try
+    FLock.Enter;
+    try
+      needFree := (FRefCount <= 0) and (FQueue.Count = 0);
+    finally
+      FLock.Leave;
+    end;
+    if needFree then
+      GDispatchers.Remove(FThreadId);
+  finally
+    GWndLock.Leave;
+  end;
+  if needFree then
+    Self.Free;
+end;
+
+procedure TAsyncDispatcher.WndProc(var msg: TMessage);
 begin
   if msg.Msg = WM_ASYNC_COMPLETE then
   begin
-    //  Runs on the calling thread. Ownership of the captured exception (passed as
-    //  the message WParam, may be nil) belongs to the completion callback, which
-    //  either hands it to OnException (and frees it) or re-raises it.
-    lExc := Exception(Pointer(msg.WParam));
     try
-      if Assigned(FCompletion) then
-        FCompletion(lExc)
-      else
-        lExc.Free;
+      DrainQueue;
     finally
-      Free; // self destruct once the completion has run.
+      //  Even if a completion re-raised, decide whether to self-destruct. When a
+      //  completion raised, the queue is not empty (remaining items) so we won't
+      //  free - the pending wake-ups will drive another drain.
+      MaybeFreeIfIdle;
     end;
   end
   else
@@ -232,12 +414,14 @@ end;
 
 { TAsyncThread }
 
-constructor TAsyncThread.Create(const worker: TProc; const wnd: HWND; const group: IAwaitableGroupInternal);
+constructor TAsyncThread.Create(const worker: TProc; const completion: TExceptionProc;
+  const dispatcher: TAsyncDispatcher; const group: IAwaitableGroupInternal);
 begin
   inherited Create(true);
   FreeOnTerminate := true;
   FWorker := worker;
-  FWnd := wnd;
+  FCompletion := completion;
+  FDispatcher := dispatcher;
   FGroup := group;
 end;
 
@@ -259,8 +443,9 @@ begin
   if FGroup <> nil then
     FGroup.Leave(Self);
 
-  //  Marshal completion (and ownership of lExc) back to the calling thread.
-  PostMessage(FWnd, WM_ASYNC_COMPLETE, WPARAM(Pointer(lExc)), 0);
+  //  Marshal completion (and ownership of lExc) back to the calling thread. After
+  //  this call the dispatcher may be freed by a concurrent drain - do not touch it.
+  FDispatcher.PostCompletion(FCompletion, lExc);
 end;
 
 
@@ -268,13 +453,28 @@ procedure RunAsync(const worker : TProc; const completion : TExceptionProc;
                    const group : IAwaitableGroupInternal; const token : ICancellationToken);
 var
   dispatcher : TAsyncDispatcher;
-  thread : TAsyncThread;
+  thread     : TAsyncThread;
 begin
-  dispatcher := TAsyncDispatcher.Create(completion);
-  thread := TAsyncThread.Create(worker, dispatcher.Wnd, group);
-  if group <> nil then
-    group.Join(thread, token);
-  thread.Start;
+  dispatcher := AcquireDispatcher;
+  thread := nil;
+  try
+    thread := TAsyncThread.Create(worker, completion, dispatcher, group);
+    if group <> nil then
+      group.Join(thread, token);
+    thread.Start;
+  except
+    //  Scheduling failed (e.g. OOM). Undo the group membership / thread and release
+    //  the dispatcher reference so it does not linger.
+    if thread <> nil then
+    begin
+      if group <> nil then
+        group.Leave(thread);
+      thread.FreeOnTerminate := False;
+      thread.Free;
+    end;
+    ReleaseDispatcher(dispatcher);
+    raise;
+  end;
 end;
 
 
@@ -343,6 +543,9 @@ begin
       end
       else
       begin
+        //  Cancellation is judged here, at delivery time: a worker that cooperatively
+        //  exits its loop on IsCancelled returns normally, and we deliver OnCancellation
+        //  rather than the (unused) result. This is intentional - see the unit notes.
         if Assigned(cancelToken) and cancelToken.IsCancelled then
         begin
           if Assigned(lCancelledProc) then
@@ -359,10 +562,11 @@ end;
 constructor TAwaitable<TResult>.Create(const asyncFunc: TAsyncCancellableFunc<TResult>;const cancellationToken : ICancellationToken );
 begin
   inherited Create;
+  if cancellationToken = nil then
+    raise Exception.Create('A cancellation token is required for a cancellable async function.');
   FCallType := TCallType.ctCancellableFunc;
   FCancellableAsyncFunc := asyncFunc;
   FCancellationToken := cancellationToken;
-  Assert(FCancellationToken <> nil);
 end;
 
 constructor TAwaitable<TResult>.Create(const asyncFunc: TAsyncFunc<TResult>);
@@ -460,6 +664,7 @@ begin
       end
       else
       begin
+        //  Cancellation judged at delivery time - intentional, see the unit notes.
         if Assigned(cancelToken) and cancelToken.IsCancelled then
         begin
           if Assigned(lCancelledProc) then
@@ -475,6 +680,8 @@ end;
 
 constructor TAwaitable.Create(const asyncProc: TAsyncCancellableProc; const cancellationToken: ICancellationToken);
 begin
+  if cancellationToken = nil then
+    raise Exception.Create('A cancellation token is required for a cancellable async procedure.');
   FCallType := TCallType.ctCancellableProc;
   FCancellableAsyncProc := asyncProc;
   FCancellationToken := cancellationToken;
@@ -610,8 +817,37 @@ begin
 end;
 
 function TAwaitableGroup.WaitForAll(maxWait_ms: cardinal): Boolean;
+var
+  msg       : TMsg;
+  startTick : cardinal;
+  elapsed   : cardinal;
 begin
-  result := FAllDone.WaitFor(maxWait_ms) = TWaitResult.wrSignaled;
+  //  Pump this thread's completion messages while waiting, so grouped Await /
+  //  OnCancellation callbacks still drain even though the caller is blocking here
+  //  (mirrors OmniThreadLibrary's ProcessMessages). Only our own WM_ASYNC_COMPLETE
+  //  messages are dispatched - other messages are left in the queue.
+  startTick := GetTickCount;
+  result := false;
+  repeat
+    while PeekMessage(msg, 0, WM_ASYNC_COMPLETE, WM_ASYNC_COMPLETE, PM_REMOVE) do
+      DispatchMessage(msg);
+
+    if FAllDone.WaitFor(10) = TWaitResult.wrSignaled then
+    begin
+      //  Final drain for completions posted just before the last worker left.
+      while PeekMessage(msg, 0, WM_ASYNC_COMPLETE, WM_ASYNC_COMPLETE, PM_REMOVE) do
+        DispatchMessage(msg);
+      result := true;
+      Exit;
+    end;
+
+    if maxWait_ms <> INFINITE then
+    begin
+      elapsed := GetTickCount - startTick;
+      if elapsed >= maxWait_ms then
+        Exit; // result stays false
+    end;
+  until false;
 end;
 
 { TAwaitableGroupFactory }
@@ -621,10 +857,39 @@ begin
   Result := TAwaitableGroup.Create;
 end;
 
+//  Free any dispatchers still registered at shutdown (best effort). In normal use
+//  each dispatcher self-destructs once idle, so this is empty unless tasks are still
+//  in flight when the app closes.
+procedure FreeRemainingDispatchers;
+var
+  pair : TPair<cardinal, TAsyncDispatcher>;
+  list : TList<TAsyncDispatcher>;
+  i    : integer;
+begin
+  list := TList<TAsyncDispatcher>.Create;
+  try
+    GWndLock.Enter;
+    try
+      for pair in GDispatchers do
+        list.Add(pair.Value);
+      GDispatchers.Clear;
+    finally
+      GWndLock.Leave;
+    end;
+    for i := 0 to list.Count - 1 do
+      list[i].Free;
+  finally
+    list.Free;
+  end;
+end;
+
 initialization
   GWndLock := TCriticalSection.Create;
+  GDispatchers := TDictionary<cardinal, TAsyncDispatcher>.Create;
 
 finalization
+  FreeRemainingDispatchers;
+  GDispatchers.Free;
   GWndLock.Free;
 
 end.

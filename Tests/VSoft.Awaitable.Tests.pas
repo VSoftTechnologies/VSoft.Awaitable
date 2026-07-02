@@ -51,6 +51,46 @@ type
 
     [Test]
     procedure OnCancellation_Runs_On_Caller_Thread_Not_Main;
+
+    //  Tasks started from the same thread share one pooled dispatcher window, and
+    //  the dispatcher frees itself once idle.
+    [Test]
+    procedure Tasks_From_Same_Thread_Share_One_Dispatcher;
+
+    //  WaitForAll pumps our completion messages, so grouped callbacks run even when
+    //  the caller does not run its own message loop.
+    [Test]
+    procedure WaitForAll_Pumps_Completions_Without_External_Pump;
+
+    //  A cancellable Configure overload given a nil token must raise a clear error
+    //  rather than letting a nil token reach user code.
+    [Test]
+    procedure Cancellable_Configure_With_Nil_Token_Raises;
+
+    //  A completion callback that itself starts another async task must keep the
+    //  per-thread dispatcher alive (no premature free) and both tasks must complete.
+    [Test]
+    procedure Reentrant_Await_From_Completion_Works;
+
+    //  A cancellable func that finishes without being cancelled delivers its result
+    //  to Await (the token-assigned-but-not-cancelled path).
+    [Test]
+    procedure Cancellable_Func_Not_Cancelled_Delivers_Result;
+
+    //  A cancelled task with no OnCancellation handler must not call the result proc
+    //  (documented intentional behaviour) and must not crash.
+    [Test]
+    procedure Cancelled_Without_OnCancellation_Does_Not_Call_Result;
+
+    //  Firing a batch, draining it (dispatcher self-frees), then firing another batch
+    //  must recreate the dispatcher and work - exercises create-after-idle-free.
+    [Test]
+    procedure Sequential_Batches_Reuse_Pool;
+
+    //  Many concurrent tasks all complete exactly once and the dispatcher returns to
+    //  zero afterwards - a soak / leak check on the queue and reference counting.
+    [Test]
+    procedure Many_Concurrent_Tasks_All_Complete_And_Free;
   end;
 
 implementation
@@ -58,7 +98,8 @@ implementation
 uses
   System.SysUtils,
   System.Classes,
-  Winapi.Windows;
+  Winapi.Windows,
+  VSoft.Awaitable.Impl;
 
 type
   TCallerMode = (cmAwait, cmException, cmCancellation);
@@ -610,6 +651,282 @@ end;
 procedure TAwaitableTests.OnCancellation_Runs_On_Caller_Thread_Not_Main;
 begin
   RunCaller(cmCancellation);
+end;
+
+procedure TAwaitableTests.Tasks_From_Same_Thread_Share_One_Dispatcher;
+var
+  i         : integer;
+  completed : integer;
+begin
+  //  Drain any dispatcher left behind by an earlier test so we start from a clean
+  //  baseline of zero live dispatchers.
+  PumpUntil(function : boolean begin result := AwaitableLiveDispatcherCount = 0; end, 1000);
+  Assert.AreEqual(0, AwaitableLiveDispatcherCount, 'expected no live dispatchers before starting');
+
+  completed := 0;
+  for i := 0 to 9 do
+    TAsync.Configure<Integer>(
+      function : Integer
+      begin
+        Sleep(20);
+        result := 1;
+      end)
+    .Await(
+      procedure(const value : Integer)
+      begin
+        Inc(completed);
+      end);
+
+  //  We are on the calling (main) thread and have NOT pumped messages yet, so all
+  //  ten tasks must share a single per-thread dispatcher - not one window each.
+  Assert.AreEqual(1, AwaitableLiveDispatcherCount, 'tasks on one thread should share a single dispatcher');
+
+  //  Drain the completions; once idle the dispatcher frees itself.
+  PumpUntil(function : boolean begin result := completed = 10; end, 5000);
+  Assert.AreEqual(10, completed, 'not all completions were delivered');
+  Assert.AreEqual(0, AwaitableLiveDispatcherCount, 'the dispatcher should free itself once idle');
+end;
+
+procedure TAwaitableTests.WaitForAll_Pumps_Completions_Without_External_Pump;
+var
+  group     : IAwaitableGroup;
+  completed : integer;
+begin
+  group := TAwaitableGroupFactory.New;
+  completed := 0;
+
+  //  Three tasks with staggered durations - the first finishes long before the last.
+  TAsync.Configure<Integer>(
+    function : Integer begin Sleep(50);  result := 1; end)
+    .GroupedBy(group)
+    .Await(procedure(const value : Integer) begin Inc(completed); end);
+
+  TAsync.Configure<Integer>(
+    function : Integer begin Sleep(150); result := 1; end)
+    .GroupedBy(group)
+    .Await(procedure(const value : Integer) begin Inc(completed); end);
+
+  TAsync.Configure<Integer>(
+    function : Integer begin Sleep(300); result := 1; end)
+    .GroupedBy(group)
+    .Await(procedure(const value : Integer) begin Inc(completed); end);
+
+  //  Block in WaitForAll WITHOUT running our own message loop. Because WaitForAll
+  //  pumps our completion messages, the early task's callback must have run by the
+  //  time it returns (the old implementation left completed at 0 here).
+  Assert.IsTrue(group.WaitForAll(5000), 'WaitForAll timed out');
+  Assert.IsTrue(completed >= 1, 'WaitForAll did not pump any completions');
+
+  //  drain any stragglers.
+  PumpUntil(function : boolean begin result := completed = 3; end, 3000);
+  Assert.AreEqual(3, completed);
+end;
+
+procedure TAwaitableTests.Cancellable_Configure_With_Nil_Token_Raises;
+begin
+  //  cancellable procedure overload
+  Assert.WillRaise(
+    procedure
+    begin
+      TAsync.Configure(
+        procedure(const token : ICancellationToken)
+        begin
+        end, nil);
+    end, Exception, 'cancellable procedure with a nil token should raise');
+
+  //  cancellable function overload
+  Assert.WillRaise(
+    procedure
+    begin
+      TAsync.Configure<Integer>(
+        function(const token : ICancellationToken) : Integer
+        begin
+          result := 0;
+        end, nil);
+    end, Exception, 'cancellable function with a nil token should raise');
+end;
+
+procedure TAwaitableTests.Reentrant_Await_From_Completion_Works;
+var
+  outerDone : boolean;
+  innerDone : boolean;
+  innerValue : Integer;
+begin
+  outerDone := false;
+  innerDone := false;
+  innerValue := 0;
+
+  TAsync.Configure<Integer>(
+    function : Integer
+    begin
+      Sleep(20);
+      result := 1;
+    end)
+  .Await(
+    procedure(const value : Integer)
+    begin
+      outerDone := true;
+      //  Start a second task from inside the completion of the first. This must
+      //  reuse (and keep alive) the calling thread's dispatcher.
+      TAsync.Configure<Integer>(
+        function : Integer
+        begin
+          Sleep(20);
+          result := 2;
+        end)
+      .Await(
+        procedure(const innerVal : Integer)
+        begin
+          innerValue := innerVal;
+          innerDone := true;
+        end);
+    end);
+
+  PumpUntil(function : boolean begin result := outerDone and innerDone; end, 5000);
+
+  Assert.IsTrue(outerDone, 'outer Await callback did not run');
+  Assert.IsTrue(innerDone, 'reentrant Await callback did not run');
+  Assert.AreEqual(2, innerValue, 'reentrant task returned the wrong result');
+  Assert.AreEqual(0, AwaitableLiveDispatcherCount, 'dispatcher should free itself once both tasks are done');
+end;
+
+procedure TAwaitableTests.Cancellable_Func_Not_Cancelled_Delivers_Result;
+var
+  tokenSource  : ICancellationTokenSource;
+  done         : boolean;
+  cancelled    : boolean;
+  theResult    : Integer;
+begin
+  tokenSource := TCancellationTokenSourceFactory.Create;
+  done := false;
+  cancelled := false;
+  theResult := 0;
+
+  TAsync.Configure<Integer>(
+    function(const token : ICancellationToken) : Integer
+    begin
+      Sleep(20);
+      //  finishes normally without ever observing cancellation.
+      result := 99;
+    end, tokenSource.Token)
+  .OnCancellation(
+    procedure
+    begin
+      cancelled := true;
+      done := true;
+    end)
+  .Await(
+    procedure(const value : Integer)
+    begin
+      theResult := value;
+      done := true;
+    end);
+
+  PumpUntil(function : boolean begin result := done; end, 3000);
+
+  Assert.IsFalse(cancelled, 'OnCancellation should not run when the token was never cancelled');
+  Assert.AreEqual(99, theResult, 'a cancellable func that completes normally should deliver its result');
+end;
+
+procedure TAwaitableTests.Cancelled_Without_OnCancellation_Does_Not_Call_Result;
+var
+  tokenSource  : ICancellationTokenSource;
+  resultCalled : boolean;
+  workerLeft   : boolean;
+begin
+  tokenSource := TCancellationTokenSourceFactory.Create;
+  resultCalled := false;
+  workerLeft := false;
+
+  //  No OnCancellation handler is configured. When the task is cancelled, the result
+  //  proc must NOT be called (intentional 'silent swallow'), and nothing must crash.
+  TAsync.Configure<Integer>(
+    function(const token : ICancellationToken) : Integer
+    begin
+      result := 0;
+      while not token.IsCancelled do
+        Sleep(1);
+      workerLeft := true;
+    end, tokenSource.Token)
+  .Await(
+    procedure(const value : Integer)
+    begin
+      resultCalled := true;
+    end);
+
+  Sleep(50);
+  tokenSource.Cancel;
+
+  //  Pump for a while so any (erroneous) completion would have a chance to run.
+  PumpUntil(function : boolean begin result := false; end, 500);
+
+  Assert.IsTrue(workerLeft, 'worker did not observe cancellation');
+  Assert.IsFalse(resultCalled, 'result proc must not run for a cancelled task with no OnCancellation');
+end;
+
+procedure TAwaitableTests.Sequential_Batches_Reuse_Pool;
+var
+  batch     : integer;
+  i         : integer;
+  completed : integer;
+begin
+  //  clean baseline
+  PumpUntil(function : boolean begin result := AwaitableLiveDispatcherCount = 0; end, 1000);
+  Assert.AreEqual(0, AwaitableLiveDispatcherCount, 'expected no live dispatchers before starting');
+
+  for batch := 0 to 1 do
+  begin
+    completed := 0;
+    for i := 0 to 4 do
+      TAsync.Configure<Integer>(
+        function : Integer
+        begin
+          Sleep(10);
+          result := 1;
+        end)
+      .Await(
+        procedure(const value : Integer)
+        begin
+          Inc(completed);
+        end);
+
+    Assert.AreEqual(1, AwaitableLiveDispatcherCount, 'each batch on one thread should use a single dispatcher');
+
+    PumpUntil(function : boolean begin result := completed = 5; end, 5000);
+    Assert.AreEqual(5, completed, 'batch did not complete');
+    Assert.AreEqual(0, AwaitableLiveDispatcherCount, 'dispatcher should free itself between batches');
+  end;
+end;
+
+procedure TAwaitableTests.Many_Concurrent_Tasks_All_Complete_And_Free;
+const
+  CTaskCount = 100;
+var
+  i         : integer;
+  completed : integer;
+begin
+  //  clean baseline
+  PumpUntil(function : boolean begin result := AwaitableLiveDispatcherCount = 0; end, 1000);
+  Assert.AreEqual(0, AwaitableLiveDispatcherCount, 'expected no live dispatchers before starting');
+
+  completed := 0;
+  for i := 0 to CTaskCount - 1 do
+    TAsync.Configure<Integer>(
+      function : Integer
+      begin
+        Sleep(5);
+        result := 1;
+      end)
+    .Await(
+      procedure(const value : Integer)
+      begin
+        Inc(completed);
+      end);
+
+  PumpUntil(function : boolean begin result := completed = CTaskCount; end, 15000);
+
+  Assert.AreEqual(CTaskCount, completed, 'not every task delivered its completion');
+  Assert.AreEqual(0, AwaitableLiveDispatcherCount, 'the dispatcher should free itself once all tasks are done');
 end;
 
 initialization
